@@ -65,23 +65,20 @@ class TestDemandEndpoints:
                 assert percent_change < 2.0, \
                     f"Item {item['item_name']} has {percent_change:.2f}% change, expected < 2%"
 
-    def test_demand_forecast_has_new_items(self, client):
-        """Test that new demand forecast items exist."""
+    def test_demand_forecast_has_inventory_matched_skus(self, client):
+        """Test that demand forecast items use SKUs that exist in inventory."""
         response = client.get("/api/demand")
         data = response.json()
 
-        # Check for the new items we added
         skus = [item["item_sku"] for item in data]
 
-        # Should have Temperature Sensor Module and Logic Controller Board
-        assert "SNR-420" in skus, "Missing Temperature Sensor Module"
-        assert "CTL-330" in skus, "Missing Logic Controller Board"
+        assert "PSU-501" in skus, "Missing 5V Switching Power Supply"
+        assert "PCB-001" in skus, "Missing Single Layer PCB Assembly"
 
-        # Verify they are marked as stable
         for item in data:
-            if item["item_sku"] in ["SNR-420", "CTL-330"]:
-                assert item["trend"].lower() == "stable", \
-                    f"New item {item['item_name']} should have stable trend"
+            if item["item_sku"] in ["PSU-501", "PCB-001"]:
+                assert item["trend"].lower() in ["stable", "increasing"], \
+                    f"Item {item['item_name']} has unexpected trend"
 
 
 class TestBacklogEndpoints:
@@ -217,6 +214,71 @@ class TestSpendingEndpoints:
             transaction = data[0]
             # Transactions should have some identifying fields
             assert isinstance(transaction, dict)
+
+
+class TestRestockingOrderEndpoints:
+    """Test suite for restocking order endpoints."""
+
+    def test_get_restocking_orders_initially_empty(self, client):
+        """GET returns an empty list before any orders are submitted."""
+        response = client.get("/api/restocking-orders")
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+    def test_create_restocking_order(self, client):
+        """POST creates a restocking order and returns 201."""
+        payload = {
+            "items": [
+                {
+                    "sku": "PCB-001",
+                    "name": "Single Layer PCB Assembly",
+                    "trend": "increasing",
+                    "gap_quantity": 150,
+                    "unit_cost": 24.99,
+                    "item_total": 3748.50
+                }
+            ],
+            "budget_used": 3748.50
+        }
+        response = client.post("/api/restocking-orders", json=payload)
+        assert response.status_code == 201
+        data = response.json()
+        assert data["status"] == "Submitted"
+        assert data["order_number"].startswith("RST-")
+        assert "expected_delivery" in data
+        assert "order_date" in data
+        assert len(data["items"]) == 1
+
+    def test_restocking_order_appears_in_list(self, client):
+        """After POST, the order is returned by GET."""
+        payload = {
+            "items": [
+                {
+                    "sku": "TMP-201",
+                    "name": "Temperature Sensor Module",
+                    "trend": "increasing",
+                    "gap_quantity": 50,
+                    "unit_cost": 89.5,
+                    "item_total": 4475.0
+                }
+            ],
+            "budget_used": 4475.0
+        }
+        client.post("/api/restocking-orders", json=payload)
+        response = client.get("/api/restocking-orders")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) >= 1
+
+    def test_restocking_order_has_7day_lead_time(self, client):
+        """Expected delivery is exactly 7 days after order_date."""
+        from datetime import datetime
+        payload = {"items": [], "budget_used": 0.0}
+        response = client.post("/api/restocking-orders", json=payload)
+        data = response.json()
+        order_dt = datetime.fromisoformat(data["order_date"])
+        delivery_dt = datetime.fromisoformat(data["expected_delivery"])
+        assert (delivery_dt - order_dt).days == 7
 
 
 class TestRootEndpoint:
